@@ -46,9 +46,17 @@ jobs:
         run: cargo test --workspace --locked
 
   build-windows:
-    # Un binario que publicamos sin pasar los tests es peor que no publicar
-    # nada, asi que el empaquetado espera a la suite.
-    needs: test
+    # TEMPORAL, y a peticion expresa: el empaquetado NO espera a la suite.
+    #
+    # Falla un unico test, `environment_textp0_form_load`, y es consecuencia
+    # esperada de aceptar letras no ASCII en los identificadores: ese formulario
+    # tiene uno, ahora se tokeniza como un solo token y su snapshot cambio. Hay
+    # que regenerarlo con los ficheros en LF -- generarlo desde un checkout
+    # Windows metería CRLF dentro y volveria a romper el job de Linux.
+    #
+    # El job `test` sigue ejecutandose para no perder la señal: se ve en rojo en
+    # la pestaña de Actions aunque la release salga. Al regenerar el snapshot,
+    # devolver el `needs: test` de una linea.
     runs-on: windows-latest
 
     steps:
