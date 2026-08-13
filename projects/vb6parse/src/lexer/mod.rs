@@ -1300,8 +1300,16 @@ pub fn take_matching_text<'a>(
 /// `Some()` with a tuple containing the matched identifier text and its corresponding VB6 token
 /// if an identifier is found at the current position in the stream; otherwise, `None`.
 fn take_variable_name<'a>(input: &mut SourceStream<'a>) -> Option<TextTokenTuple<'a>> {
-    if input.peek(1)?.chars().next()?.is_ascii_alphabetic() {
-        let variable_text = input.take_ascii_underscore_alphanumerics()?;
+    // The first CHARACTER, not the first byte: `peek(1)` returns None for a
+    // multi-byte one, which would reject an identifier starting with an
+    // accented letter.
+    let first = input.contents[input.offset()..].chars().next()?;
+
+    // VB6 accepts letters outside ASCII in identifiers, so the lexer has to as
+    // well: stopping at the first non-ASCII byte splits one name into several
+    // and makes distinct names collide.
+    if first.is_alphabetic() {
+        let variable_text = input.take_identifier_characters()?;
 
         return Some((variable_text, Token::Identifier));
     }
@@ -2413,7 +2421,10 @@ Attribute VB_Exposed = False
     /// tokenizing carries on afterwards.
     #[test]
     fn multibyte_character_is_reported_whole() {
-        let mut input = SourceStream::new("", "x = ñ + 1");
+        // A letter is not an unknown character any more -- `ñ` is a perfectly
+        // good identifier -- so this needs one that cannot start a name. `€`
+        // is a currency symbol, not alphanumeric.
+        let mut input = SourceStream::new("", "x = \u{20ac} + 1");
         let (tokens_opt, failures) = tokenize(&mut input).unpack();
 
         let tokens = tokens_opt.expect("Expected tokens");
@@ -2423,6 +2434,30 @@ Attribute VB_Exposed = False
             "tokenizing should continue past the unknown character"
         );
         assert_eq!(failures.len(), 1, "one unknown character, one failure");
+    }
+
+    /// An accented letter is part of the identifier, not an unknown token: VB6
+    /// accepts such names, and truncating them makes distinct ones collide.
+    #[test]
+    fn accented_identifier_is_a_single_token() {
+        let mut input = SourceStream::new("", "A\u{f1}adirEnlaces = 1");
+        let (tokens_opt, failures) = tokenize(&mut input).unpack();
+
+        assert!(failures.is_empty(), "{failures:?}");
+        let tokens = tokens_opt.expect("Expected tokens");
+
+        assert_eq!(tokens[0], ("A\u{f1}adirEnlaces", Token::Identifier));
+    }
+
+    /// And an identifier may start with one.
+    #[test]
+    fn identifier_may_start_with_an_accented_letter() {
+        let mut input = SourceStream::new("", "\u{d1}ora = 1");
+        let (tokens_opt, _failures) = tokenize(&mut input).unpack();
+
+        let tokens = tokens_opt.expect("Expected tokens");
+
+        assert_eq!(tokens[0], ("\u{d1}ora", Token::Identifier));
     }
 
     /// Non-ASCII characters inside comments and string literals are consumed by

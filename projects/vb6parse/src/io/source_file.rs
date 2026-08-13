@@ -446,7 +446,10 @@ mod encode_tests {
 
         let encoded = encode_windows_1252(source.as_ref()).expect("encodes");
 
-        assert_eq!(encoded, bytes, "the file must survive a decode/encode cycle");
+        assert_eq!(
+            encoded, bytes,
+            "the file must survive a decode/encode cycle"
+        );
     }
 
     #[test]

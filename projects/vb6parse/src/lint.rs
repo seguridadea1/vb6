@@ -18,7 +18,8 @@
 //! ```
 
 use crate::ConcreteSyntaxTree;
-use crate::errors::{ErrorKind, LexerError};
+use crate::SyntaxKind;
+use crate::parsers::CstNode;
 
 /// Whether a rule's finding can be corrected mechanically.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -221,63 +222,69 @@ fn trailing_whitespace(source: &str) -> Vec<Diagnostic> {
 /// so they are worth knowing about before a migration. Renaming one changes a
 /// public name, so this rule never offers a fix.
 ///
-/// It cannot be written as "an `Identifier` token holding a non-ASCII
-/// character". The lexer takes identifiers with
-/// `take_ascii_underscore_alphanumerics` and stops at the first byte outside
-/// ASCII, so `Añadir` never becomes one token; the stray character reaches the
-/// tokenizer's fallback, which records an `UnknownToken` failure and pushes no
-/// token at all. The character is therefore absent from the CST, and the
-/// failure list is the only place it appears.
-///
-/// That is also what makes the rule precise: comments and string literals are
-/// consumed whole by their own branches, so an accent inside product text
-/// never reaches the fallback and never shows up here.
+/// Reads `Identifier` tokens straight from the CST, which is possible because
+/// the lexer takes whole identifiers including their non-ASCII letters. That is
+/// also what makes the rule precise: comments and string literals are their own
+/// tokens, so an accent in product text is never mistaken for a name.
 fn non_ascii_in_code(source: &str) -> Vec<Diagnostic> {
-    let (_cst_opt, failures) = ConcreteSyntaxTree::from_text("lint_input", source).unpack();
+    let (cst_opt, _failures) = ConcreteSyntaxTree::from_text("lint_input", source).unpack();
+
+    let Some(cst) = cst_opt else {
+        return Vec::new();
+    };
 
     let line_starts = line_starts(source);
-    let continued_comment = continued_comment_lines(source);
-    let mut found: Vec<Diagnostic> = Vec::new();
+    let mut found = Vec::new();
+    let mut offset = 0usize;
 
-    for failure in failures {
-        let ErrorKind::Lexer(LexerError::UnknownToken { token }) = failure.kind.as_ref() else {
-            continue;
-        };
+    // The CST is lossless, so walking its tokens in document order and adding
+    // up their lengths gives the byte offset of each one.
+    walk_tokens(
+        &cst.to_root_node(),
+        false,
+        &mut |token: &CstNode, in_designer| {
+            let text = token.text();
 
-        if token.is_ascii() {
-            continue;
-        }
+            if token.kind() == SyntaxKind::Identifier && !text.is_ascii() && !in_designer {
+                let (line, column) = position(&line_starts, source, offset);
 
-        // The failure is recorded after the character has been consumed, so
-        // step back over it to point at the character itself.
-        let offset = (failure.error_offset as usize)
-            .min(source.len())
-            .saturating_sub(token.len());
-        let (line, column) = position(&line_starts, source, offset);
+                found.push(Diagnostic {
+                    code: "N001",
+                    message: format!("identifier `{text}` contains a character outside ASCII"),
+                    line,
+                    column,
+                    fixability: Fixability::None,
+                });
+            }
 
-        if continued_comment.contains(&line) {
-            continue;
-        }
-
-        // One accented name produces one failure per character; report the
-        // name once rather than once per accent.
-        if found
-            .last()
-            .is_some_and(|previous| previous.line == line && column <= previous.column + 2)
-        {
-            continue;
-        }
-
-        found.push(Diagnostic {
-            code: "N001",
-            message: format!("identifier contains a character outside ASCII: {token}"),
-            line,
-            column,
-            fixability: Fixability::None,
-        });
-    }
+            offset += text.len();
+        },
+    );
 
     found
+}
+
+/// Walks every token in document order, telling the visitor whether it sits
+/// inside the designer section of a form or class.
+///
+/// Those tokens are visited either way, because the caller adds up their
+/// lengths to track offsets, but a control caption there is product text and
+/// the VB6 IDE owns that block, so nothing in it is reported.
+fn walk_tokens(node: &CstNode, in_designer: bool, visit: &mut impl FnMut(&CstNode, bool)) {
+    if node.is_token() {
+        visit(node, in_designer);
+        return;
+    }
+
+    let in_designer = in_designer
+        || matches!(
+            node.kind(),
+            SyntaxKind::VersionStatement | SyntaxKind::PropertiesBlock
+        );
+
+    for child in node.children() {
+        walk_tokens(child, in_designer, visit);
+    }
 }
 
 /// One-based numbers of the lines that are the continuation of a comment
@@ -321,7 +328,17 @@ fn line_starts(source: &str) -> Vec<usize> {
 }
 
 /// Turns a byte offset into a one-based line and character column.
+///
+/// The offset arrives from adding up token lengths across the tree, so it can
+/// land inside a multi-byte character if the tree and the text ever disagree by
+/// a byte. Slicing there panics, and a lint rule must not bring the whole run
+/// down over a column number, so the offset is walked back to a boundary.
 fn position(line_starts: &[usize], source: &str, offset: usize) -> (usize, usize) {
+    let mut offset = offset.min(source.len());
+    while offset > 0 && !source.is_char_boundary(offset) {
+        offset -= 1;
+    }
+
     let line_index = line_starts.partition_point(|start| *start <= offset) - 1;
     let line_start = line_starts[line_index];
     let column = source[line_start..offset].chars().count() + 1;
@@ -355,8 +372,14 @@ mod tests {
             "the comment and the string are text: {found:?}"
         );
         assert_eq!(found[0].line, 2);
-        // Column 18 is the 'ñ' itself in `Public Function Añadir()`.
-        assert_eq!(found[0].column, 18);
+        // Column 17 is where `Añadir` starts: the whole identifier is one
+        // token now, so the finding points at the name and not at the accent.
+        assert_eq!(found[0].column, 17);
+        assert!(
+            found[0].message.contains("A\u{f1}adir"),
+            "the message names the identifier: {}",
+            found[0].message
+        );
         assert_eq!(found[0].fixability, Fixability::None);
     }
 

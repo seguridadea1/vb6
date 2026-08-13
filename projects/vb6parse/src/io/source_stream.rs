@@ -623,6 +623,27 @@ impl<'a> SourceStream<'a> {
         )
     }
 
+    /// Takes characters while they can form part of a VB6 identifier: any
+    /// alphanumeric character, or `_`.
+    ///
+    /// Unlike [`SourceStream::take_ascii_underscore_alphanumerics`] this is not
+    /// limited to ASCII, because VB6 is not: `Public Function Añadir()` is
+    /// valid, and code bases written in Spanish, French or German are full of
+    /// such names. Stopping at the first non-ASCII byte splits one identifier
+    /// into several, which makes distinct names collide --
+    /// `JIRA_AñadirEnlaces` and `JIRA_AñadirAdjuntos` both truncate to
+    /// `JIRA_A`.
+    ///
+    /// Source files are decoded from Windows-1252, so the only characters that
+    /// can appear are Latin-1 ones, and `char::is_alphanumeric` covers exactly
+    /// the letters of that code page without needing a table.
+    pub fn take_identifier_characters(&mut self) -> Option<&'a str> {
+        self.take_until_lambda(
+            |character| !character.is_alphanumeric() && character != '_',
+            false,
+        )
+    }
+
     /// Takes characters from the stream until a character that is not a digit (0-9)
     /// is encountered or the end of the stream is reached.
     ///
