@@ -1,0 +1,88 @@
+# Publica nuestra compilacion de aspen para que la consuman los puestos de
+# desarrollo. Es una variacion del `Aspen Release` de upstream: mismo build,
+# distinto destino y con checksums, que es lo que el instalador verifica.
+#
+# Se dispara con etiquetas `a1-v*` sobre la rama A1.
+#
+# El destino sale de la variable de repositorio `A1_RELEASE_REPO`. Si no esta
+# definida publica en este mismo repositorio, que es el comportamiento por
+# defecto y no necesita ningun secreto. Para publicar en un repositorio
+# PRIVADO aparte hay que definir:
+#   - variable  A1_RELEASE_REPO  = seguridadea1/<repo-privado>
+#   - secreto   A1_RELEASE_TOKEN = PAT con permiso `contents: write` en el
+#     repositorio de destino (el GITHUB_TOKEN de este repo no sirve: solo
+#     tiene permisos aqui).
+name: A1 Release
+
+permissions:
+  contents: write
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'a1-v*'
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install WiX Toolset
+        run: choco install wixtoolset -y
+
+      # La suite entera, no solo el build: un binario que publicamos sin
+      # pasar los tests es peor que no publicar nada.
+      - name: Test workspace
+        run: cargo test --workspace --locked
+
+      - name: Build Aspen
+        run: cargo build --release -p aspen
+
+      - name: Package Windows artifact
+        shell: bash
+        run: |
+          python3 scripts/package_aspen_windows.py \
+            --binary target/release/aspen.exe \
+            --output dist/aspen-windows
+
+      - name: Create Windows release archive
+        shell: pwsh
+        run: |
+          Compress-Archive -Path dist/aspen-windows/* -DestinationPath dist/aspen-windows.zip -Force
+
+      - name: Build MSI installer
+        shell: bash
+        run: |
+          python3 scripts/build_aspen_msi.py --output dist/aspen-windows.msi
+
+      # El instalador comprueba el checksum antes de usar el binario, asi que
+      # el fichero se genera aqui y viaja con la release.
+      - name: Generate checksums
+        shell: bash
+        working-directory: dist
+        run: |
+          sha256sum --text aspen-windows.zip aspen-windows.msi > checksums.txt
+          cat checksums.txt
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          repository: ${{ vars.A1_RELEASE_REPO || github.repository }}
+          token: ${{ secrets.A1_RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
+          tag_name: ${{ github.ref_name }}
+          files: |
+            dist/aspen-windows.zip
+            dist/aspen-windows.msi
+            dist/checksums.txt
+          draft: false
+          prerelease: false
+          fail_on_unmatched_files: true
