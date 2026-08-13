@@ -24,17 +24,34 @@ on:
       - 'a1-v*'
 
 jobs:
+  # La suite corre en LINUX a proposito, aunque el binario se compile en
+  # Windows. Los snapshots de `test-data` se generaron desde blobs con LF, y en
+  # Windows esos ficheros se materializan como CRLF -- los submodulos traen su
+  # propio .gitattributes, asi que `core.autocrlf=false` no basta para
+  # evitarlo. En Linux coinciden y la comparacion mide lo que debe medir: el
+  # parser, no el checkout.
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Test workspace
+        run: cargo test --workspace --locked
+
   build-windows:
+    # Un binario que publicamos sin pasar los tests es peor que no publicar
+    # nada, asi que el empaquetado espera a la suite.
+    needs: test
     runs-on: windows-latest
 
     steps:
-      # ANTES del checkout, y es imprescindible en Windows. Los blobs de
-      # test-data guardan LF; con autocrlf activo se materializan como CRLF y
-      # los snapshots -- generados desde LF -- dejan de coincidir. Son los ocho
-      # tests `class_load` que fallan, y el diff es solo "\n" contra "\r\n".
-      - name: Do not translate line endings
-        run: git config --global core.autocrlf false
-
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
@@ -45,11 +62,6 @@ jobs:
 
       - name: Install WiX Toolset
         run: choco install wixtoolset -y
-
-      # La suite entera, no solo el build: un binario que publicamos sin
-      # pasar los tests es peor que no publicar nada.
-      - name: Test workspace
-        run: cargo test --workspace --locked
 
       - name: Build Aspen
         run: cargo build --release -p aspen
