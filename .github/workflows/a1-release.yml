@@ -4,14 +4,14 @@
 #
 # Se dispara con etiquetas `a1-v*` sobre la rama A1.
 #
-# El destino sale de la variable de repositorio `A1_RELEASE_REPO`. Si no esta
-# definida publica en este mismo repositorio, que es el comportamiento por
-# defecto y no necesita ningun secreto. Para publicar en un repositorio
-# PRIVADO aparte hay que definir:
-#   - variable  A1_RELEASE_REPO  = seguridadea1/<repo-privado>
-#   - secreto   A1_RELEASE_TOKEN = PAT con permiso `contents: write` en el
-#     repositorio de destino (el GITHUB_TOKEN de este repo no sirve: solo
-#     tiene permisos aqui).
+# Publica en las Releases de ESTE repositorio con el GITHUB_TOKEN del propio
+# workflow: el `permissions: contents: write` de abajo es todo lo que hace
+# falta, sin variables ni secretos.
+#
+# Lo unico que hay que saber: este fork es PUBLICO, asi que sus releases
+# tambien lo son. Si algun dia el binario tiene que ser privado habra que
+# publicarlo en otro repositorio, y eso si exige un PAT, porque el
+# GITHUB_TOKEN solo tiene permisos aqui.
 name: A1 Release
 
 permissions:
@@ -76,8 +76,6 @@ jobs:
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
-          repository: ${{ vars.A1_RELEASE_REPO || github.repository }}
-          token: ${{ secrets.A1_RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
           tag_name: ${{ github.ref_name }}
           files: |
             dist/aspen-windows.zip
