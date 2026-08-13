@@ -28,6 +28,13 @@ jobs:
     runs-on: windows-latest
 
     steps:
+      # ANTES del checkout, y es imprescindible en Windows. Los blobs de
+      # test-data guardan LF; con autocrlf activo se materializan como CRLF y
+      # los snapshots -- generados desde LF -- dejan de coincidir. Son los ocho
+      # tests `class_load` que fallan, y el diff es solo "\n" contra "\r\n".
+      - name: Do not translate line endings
+        run: git config --global core.autocrlf false
+
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
