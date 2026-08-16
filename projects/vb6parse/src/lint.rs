@@ -64,6 +64,13 @@ pub const RULES: &[Rule] = &[
         default_on: true,
     },
     Rule {
+        code: "W003",
+        name: "line-too-long",
+        summary: "line is longer than the 1023 characters the VB6 editor accepts",
+        fixability: Fixability::None,
+        default_on: true,
+    },
+    Rule {
         code: "N001",
         name: "non-ascii-in-code",
         summary: "identifier contains a character outside ASCII",
@@ -142,6 +149,10 @@ pub fn lint_source(source: &str, settings: &LintSettings) -> Vec<Diagnostic> {
         found.extend(trailing_whitespace(source));
     }
 
+    if settings.is_enabled("W003") {
+        found.extend(line_too_long(source));
+    }
+
     if settings.is_enabled("N001") {
         found.extend(non_ascii_in_code(source));
     }
@@ -212,6 +223,54 @@ fn trailing_whitespace(source: &str) -> Vec<Diagnostic> {
                 line: index + 1,
                 column: trimmed.chars().count() + 1,
                 fixability: Fixability::Safe,
+            })
+        })
+        .collect()
+}
+
+/// W003. The VB6 IDE refuses a line longer than 1023 characters, and the
+/// compiler does not. That gap is the whole point of the rule: `VB6.EXE /make`
+/// builds a 3,000 character `Or` chain without a word (measured 2026-08-16), so
+/// a line over the limit passes a command-line build in green and then breaks
+/// the IDE of everyone on the team. A build gate cannot see this one.
+///
+/// What the compiler does limit is the string LITERAL, also at 1023, and it
+/// folds concatenated literals before checking — which is why `"a" & "b" & ...`
+/// fails around the same size while the `Or` chain sails past it. Those are
+/// caught by the build; this rule is for the ones that are not.
+///
+/// The length is counted in CHARACTERS, not bytes: VB6 keeps these files in a
+/// single-byte codepage, where one character is one byte, so counting UTF-8
+/// bytes would over-report every line holding an accent.
+///
+/// No fix offered: where to break a line is a judgment call, and a `_`
+/// continuation is not valid everywhere — a string literal cannot be split with
+/// one. Splitting it wrong changes the program.
+fn line_too_long(source: &str) -> Vec<Diagnostic> {
+    /// What the VB6 editor accepts on one line.
+    const LIMIT: usize = 1023;
+
+    source
+        .split('\n')
+        .enumerate()
+        .filter_map(|(index, line)| {
+            let line = line.strip_suffix('\r').unwrap_or(line);
+            let length = line.chars().count();
+
+            if length <= LIMIT {
+                return None;
+            }
+
+            Some(Diagnostic {
+                code: "W003",
+                message: format!(
+                    "line is {length} characters long; the VB6 editor stops at {LIMIT}"
+                ),
+                line: index + 1,
+                // Point at the first character past the limit, which is where
+                // the line has to give.
+                column: LIMIT + 1,
+                fixability: Fixability::None,
             })
         })
         .collect()
@@ -444,6 +503,58 @@ mod tests {
 
         assert_eq!(found.len(), 1);
         assert_eq!((found[0].line, found[0].column), (1, 6));
+    }
+
+    #[test]
+    fn finds_a_line_over_the_editor_limit() {
+        // 1023 is the last length the VB6 editor takes; 1024 is the first it
+        // refuses. The rule has to land exactly on that edge.
+        let legal = format!("Dim a\r\n{}\r\n", "x".repeat(1023));
+        assert!(lint_source(&legal, &with(&["W003"])).is_empty());
+
+        let over = format!("Dim a\r\n{}\r\n", "x".repeat(1024));
+        let found = lint_source(&over, &with(&["W003"]));
+
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].code, "W003");
+        assert_eq!(found[0].line, 2);
+        assert_eq!(found[0].column, 1024, "points at the first character over");
+        assert_eq!(found[0].fixability, Fixability::None);
+        assert!(
+            found[0].message.contains("1024 characters"),
+            "the message gives the length: {}",
+            found[0].message
+        );
+    }
+
+    /// VB6 stores these files in a single-byte codepage, so a line of 1023
+    /// accented characters is 1023 characters for the editor -- but 2046 bytes
+    /// once it is UTF-8 in memory. Counting bytes would report a line that is
+    /// perfectly legal.
+    #[test]
+    fn counts_characters_and_not_utf8_bytes() {
+        let accented = format!("{}\r\n", "\u{f1}".repeat(1023));
+
+        assert!(
+            lint_source(&accented, &with(&["W003"])).is_empty(),
+            "1023 accented characters still fit on a VB6 line"
+        );
+
+        let over = format!("{}\r\n", "\u{f1}".repeat(1024));
+        assert_eq!(lint_source(&over, &with(&["W003"])).len(), 1);
+    }
+
+    #[test]
+    fn line_too_long_runs_by_default() {
+        // It is a hard tool limit, not a style preference: it has to fire
+        // without anyone selecting it.
+        let over = format!("{}\r\n", "x".repeat(1024));
+        let codes: Vec<_> = lint_source(&over, &LintSettings::default())
+            .iter()
+            .map(|diagnostic| diagnostic.code)
+            .collect();
+
+        assert!(codes.contains(&"W003"), "got {codes:?}");
     }
 
     #[test]
